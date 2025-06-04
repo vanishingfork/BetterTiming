@@ -6,25 +6,25 @@ This is a small project of mine aiming to improve CPU timing in KVM SVM implemen
 ![screenshot2](screenshot2.png)
 *[vmcheck kernel-mode driver](https://github.com/SamuelTulach/vmcheck) passing checks*
 
-**Disclaimer:** Testing was done only in an isolated environment. Doing such a change might introduce unwanted side effects to the guest OS.
+**Disclaimer:** Testing was done only in an isolated environment. Doing such a change might introduce unwanted side effects to the guest OS. This was only built against linux-tkg with Arch Linux patches. All other kernels are untested.
 
 ## How to apply the patch
 You will need to recompile Linux kernel from source. If you are on a distribution that has a custom build system, it might be easier to use it for building the kernel. The patch is currently for version 5.9.2, but you should be able to easily modify it for any new version of the kernel. 
 
 1.) Download and extract kernel source
 ```
-wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.9.2.tar.xz
-tar -xf linux-5.9.2.tar.xz
-cd linux-5.9.2
+wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.14.9.tar.xz
+tar -xf linux-6.14.9.tar.xz
+cd linux-6.14.9
 ```
 2.) Download the patch
 ```
-git clone https://github.com/SamuelTulach/BetterTiming
-mv BetterTiming/timing.patch timing.patch
+git clone https://github.com/vanishingfork/BetterTiming
+mv vanishingfork/timing.patch timing.patch
 ```
 3.) Apply patch
 ```
-patch -s -p0 < timing.patch
+patch -s -p1 < timing.patch
 ```
 4.) Build and install the kernel
 
@@ -37,18 +37,18 @@ u64 total_exit_time;
 Then created a wrapper function around `vcpu_enter_guest` (which is where VM-exit is handled). This wrapper would then save the time it took for the vcpu to exit if the exit reason matches specified value.
 ```
 static int vcpu_enter_guest(struct kvm_vcpu *vcpu) 
-{	
+{
 	int result;
-	u64 differece;
-	
+	u64 difference;
+
 	vcpu->last_exit_start = rdtsc();
 
 	result = vcpu_enter_guest_real(vcpu);
 
 	if (vcpu->run->exit_reason == 123) 
 	{
-		differece = rdtsc() - vcpu->last_exit_start;
-		vcpu->total_exit_time += differece;
+		difference = rdtsc() - vcpu->last_exit_start;
+		vcpu->total_exit_time += difference;
 	}
 
 	return result;
@@ -56,24 +56,22 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 ```
 Added a VM-exit handler for RDTSC instruction which takes those values.
 ```
-static int handle_rdtsc_interception(struct vcpu_svm *svm) 
+int kvm_emulate_rdtsc(struct kvm_vcpu *vcpu)
 {
 	u64 differece;
 	u64 final_time;
 	u64 data;
 	
-	differece = rdtsc() - svm->vcpu.last_exit_start;
-	final_time = svm->vcpu.total_exit_time + differece;
+	differece = rdtsc() - vcpu->last_exit_start;
+	final_time = vcpu->total_exit_time + differece;
 
 	data = rdtsc() - final_time;
 
-	svm->vcpu.run->exit_reason = 123;
-	svm->vcpu.arch.regs[VCPU_REGS_RAX] = data & -1u;
-	svm->vcpu.arch.regs[VCPU_REGS_RDX] = (data >> 32) & -1u;
+	vcpu->arch.regs[VCPU_REGS_RAX] = data & -1u;
+	vcpu->arch.regs[VCPU_REGS_RDX] = (data >> 32) & -1u;
 
-	skip_emulated_instruction(&svm->vcpu);
-
-	return 1;
+	vcpu->run->exit_reason = 123;
+	return kvm_skip_emulated_instruction(vcpu);
 }
 ```
 And of course modified `kvm_get_msr_common` to also utilise this patch.
